@@ -1,6 +1,6 @@
 #!/bin/bash
 
-VERSION="1.0.8"
+VERSION="1.0.9"
 AUTHOR="domuji6@gmail.com"
 TARGET_DIR=""
 MAX_DEPTH=1
@@ -25,8 +25,7 @@ cleanup() {
 # Handle SIGINT (Ctrl+C) gracefully
 handle_sigint() {
     CANCELLED=true
-    echo -e "\n\nOperation cancelled by user." >&2
-    cleanup
+    printf "\n\nOperation cancelled by user.\n" >&2
     exit 130
 }
 
@@ -118,14 +117,14 @@ while getopts "hvsnftdcD:L:-:" opt; do
         c) USE_COLOR=false ;;
         D) 
             if ! [[ "$OPTARG" =~ ^[0-9]+$ ]]; then
-                echo "Error: -D requires a numeric argument"
+                echo "Error: -D requires a numeric argument" >&2
                 exit 1
             fi
             LIMIT_DIRS="$OPTARG" 
             ;;
         L) 
             if ! [[ "$OPTARG" =~ ^[0-9]+$ ]]; then
-                echo "Error: -L requires a numeric argument"
+                echo "Error: -L requires a numeric argument" >&2
                 exit 1
             fi
             LIMIT_FILES="$OPTARG" 
@@ -154,31 +153,32 @@ if [ ! -d "$TARGET_DIR" ]; then
     exit 1
 fi
 
-if [ -n "$2" ]; then
-    if ! [[ "$2" =~ ^[0-9]+$ ]]; then
+MAX_DEPTH_ARG="${2:-}"
+if [ -n "$MAX_DEPTH_ARG" ]; then
+    if ! [[ "$MAX_DEPTH_ARG" =~ ^[0-9]+$ ]]; then
         echo "Error: max_depth must be a non-negative integer" >&2
         exit 1
     fi
-    MAX_DEPTH="$2"
+    MAX_DEPTH="$MAX_DEPTH_ARG"
 fi
 
 # Validate conflicting options
 if [ "$SHOW_TYPE" = "files" ] && [ "$LIMIT_DIRS" -gt 0 ]; then
-    echo "Warning: -f (files only) and -D (limit directories) are conflicting. Ignoring -D."
+    echo "Warning: -f (files only) and -D (limit directories) are conflicting. Ignoring -D." >&2
     LIMIT_DIRS=0
 fi
 
 if [ "$SHOW_TYPE" = "dirs" ] && [ "$LIMIT_FILES" -gt 0 ]; then
-    echo "Warning: -d (dirs only) and -L (limit files) are conflicting. Ignoring -L."
+    echo "Warning: -d (dirs only) and -L (limit files) are conflicting. Ignoring -L." >&2
     LIMIT_FILES=0
 fi
 
 # Set colors based on USE_COLOR flag
 if [ "$USE_COLOR" = true ]; then
-    BLUE='\033[0;34m'
-    GREEN='\033[0;32m'
-    GRAY='\033[0;90m'
-    RESET='\033[0m'
+    BLUE=$'\033[0;34m'
+    GREEN=$'\033[0;32m'
+    GRAY=$'\033[0;90m'
+    RESET=$'\033[0m'
 else
     BLUE=''
     GREEN=''
@@ -203,7 +203,8 @@ print_tree() {
         return 0
     fi
     
-    local temp_file=$(mktemp)
+    local temp_file
+    temp_file=$(mktemp)
     TEMP_FILES+=("$temp_file")
     
     for item in "$dir"/*; do
@@ -214,7 +215,8 @@ print_tree() {
         fi
         
         [ ! -e "$item" ] && continue
-        local name=$(basename "$item")
+        local name
+        name=$(basename "$item")
         local is_dir=0
         [ -d "$item" ] && is_dir=1
         
@@ -225,8 +227,9 @@ print_tree() {
             continue
         fi
         
-        # Get both byte size for sorting and human-readable size for display
-        local size_bytes=$(du -sb "$item" 2>/dev/null | cut -f1)
+        # Get byte size
+        local size_bytes
+        size_bytes=$(du -sb "$item" 2>/dev/null | cut -f1)
         
         # Check if du was interrupted
         if [ "$CANCELLED" = true ]; then
@@ -239,28 +242,30 @@ print_tree() {
             size_bytes=0
         fi
         
-        local size_human=$(numfmt --to=iec-i --suffix=B "$size_bytes" 2>/dev/null)
+        local size_human
+        size_human=$(numfmt --to=iec-i --suffix=B "$size_bytes" 2>/dev/null)
         if [ -z "$size_human" ]; then
             size_human="${size_bytes}B"
         fi
         
-        # Get modification time
-        local mtime=$(stat -c %Y "$item" 2>/dev/null)
+        # Get modification time in a single stat call
+        local stat_out
+        stat_out=$(stat -c "%Y %y" "$item" 2>/dev/null)
+        local mtime="${stat_out%% *}"
+        local mtime_human="${stat_out#* }"
+        mtime_human="${mtime_human%.*}"
         if [ -z "$mtime" ]; then
             mtime=0
-        fi
-        
-        local mtime_human=$(stat -c "%y" "$item" 2>/dev/null | cut -d. -f1)
-        if [ -z "$mtime_human" ]; then
             mtime_human="N/A"
         fi
         
+        local sort_key
         if [ "$SORT_BY" = "size" ]; then
-            local sort_key="$size_bytes"
+            sort_key="$size_bytes"
         elif [ "$SORT_BY" = "time" ]; then
-            local sort_key="$mtime"
+            sort_key="$mtime"
         else
-            local sort_key="$name"
+            sort_key="$name"
         fi
         
         # Use tab as delimiter: sort_key, name, size, mtime_human, is_dir
@@ -281,9 +286,9 @@ print_tree() {
     local dir_count=0
     local file_count=0
     
-    while IFS=$'\t' read -r _ name size mtime is_dir; do
+    while IFS=$'\t' read -r _ item_name item_size item_mtime item_is_dir; do
         ((count++))
-        if [ "$is_dir" -eq 1 ]; then
+        if [ "$item_is_dir" -eq 1 ]; then
             ((dir_count++))
         else
             ((file_count++))
@@ -296,7 +301,7 @@ print_tree() {
     local hidden_dirs=0
     local hidden_files=0
     
-    while IFS=$'\t' read -r _ name size mtime is_dir; do
+    while IFS=$'\t' read -r _ item_name item_size item_mtime item_is_dir; do
         # Check cancellation in output loop
         if [ "$CANCELLED" = true ]; then
             remove_temp_file "$temp_file"
@@ -309,7 +314,7 @@ print_tree() {
         
         local should_show=1
         
-        if [ "$is_dir" -eq 1 ]; then
+        if [ "$item_is_dir" -eq 1 ]; then
             if [ "$LIMIT_DIRS" -gt 0 ] && [ "$shown_dirs" -ge "$LIMIT_DIRS" ]; then
                 ((hidden_dirs++))
                 should_show=0
@@ -329,16 +334,16 @@ print_tree() {
             # Display format depends on sort type
             local line=""
             if [ "$SORT_BY" = "time" ]; then
-                if [ "$is_dir" -eq 1 ]; then
-                    printf -v line "%s%s${BLUE}%s/${RESET} [%s] %s\n" "$prefix" "$branch" "$name" "$size" "$mtime"
+                if [ "$item_is_dir" -eq 1 ]; then
+                    printf -v line "%s%s${BLUE}%s/${RESET} [%s] %s\n" "$prefix" "$branch" "$item_name" "$item_size" "$item_mtime"
                 else
-                    printf -v line "%s%s${GREEN}%s${RESET} [%s] %s\n" "$prefix" "$branch" "$name" "$size" "$mtime"
+                    printf -v line "%s%s${GREEN}%s${RESET} [%s] %s\n" "$prefix" "$branch" "$item_name" "$item_size" "$item_mtime"
                 fi
             else
-                if [ "$is_dir" -eq 1 ]; then
-                    printf -v line "%s%s${BLUE}%s/${RESET} [%s]\n" "$prefix" "$branch" "$name" "$size"
+                if [ "$item_is_dir" -eq 1 ]; then
+                    printf -v line "%s%s${BLUE}%s/${RESET} [%s]\n" "$prefix" "$branch" "$item_name" "$item_size"
                 else
-                    printf -v line "%s%s${GREEN}%s${RESET} [%s]\n" "$prefix" "$branch" "$name" "$size"
+                    printf -v line "%s%s${GREEN}%s${RESET} [%s]\n" "$prefix" "$branch" "$item_name" "$item_size"
                 fi
             fi
 
@@ -347,8 +352,8 @@ print_tree() {
                 return 0
             fi
             
-            local fullpath="$dir/$name"
-            if [ "$is_dir" -eq 1 ] && [ $depth -lt $((MAX_DEPTH - 1)) ]; then
+            local fullpath="$dir/$item_name"
+            if [ "$item_is_dir" -eq 1 ] && [ $depth -lt $((MAX_DEPTH - 1)) ]; then
                 local next=$([[ $is_last == 1 ]] && echo "    " || echo "│   ")
                 print_tree "$fullpath" $((depth + 1)) "$prefix$next"
                 # Check if recursion was cancelled

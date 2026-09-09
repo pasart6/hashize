@@ -1,0 +1,25 @@
+# Compiled binaries & artifacts
+hashize
+hashize_static
+*.x
+*.x.c
+*.out
+*.o
+*.so
+*.a
+
+# Backup & temporary test files
+*.bak
+*.backup
+*~
+hashize_test.sh
+*.tmp
+*.temp
+
+# OS & Editor files
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.vscode/
+.idea/

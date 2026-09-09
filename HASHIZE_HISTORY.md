@@ -82,7 +82,8 @@ SIGPIPE 처리 완료:
 ```bash
 trap "cleanup; exit 0" PIPE
 printf -v line "format" args...
-if ! printf "%s" "$line" 2>/dev/null; then
+if ! printf "%s" "$line" 2>/dev/null;
+then
     remove_temp_file "$temp_file"
     return 0
 fi
@@ -205,7 +206,8 @@ CANCELLED=false
 
 handle_sigint() {
     CANCELLED=true
-    echo -e "\n\nOperation cancelled by user." >&2
+    echo -e "\n\nOperation cancelled by user."
+>&2
     cleanup
     exit 130
 }
@@ -249,7 +251,8 @@ CANCELLED=false
 
 handle_sigint() {
     CANCELLED=true
-    echo -e "\n\nOperation cancelled by user." >&2
+    echo -e "\n\nOperation cancelled by user."
+>&2
     cleanup
     exit 130
 }
@@ -312,3 +315,23 @@ hashize /tmp abc && echo "Success"  # max_depth 검증 실패로 실행 안됨
 # 정상적인 help는 exit 0
 hashize -h && echo "Help OK"
 ```
+
+### v1.0.9 (2026-09-09)
+코드 품질 및 성능 개선:
+- SIGINT 처리 시 정리 작업이 EXIT 트랩을 통해 한 번만 실행되도록 중복 호출 제거
+- 취소 메시지를 `echo -e` 대신 `printf`로 출력
+- ANSI 색상 코드를 Bash escape 문자열로 명확하게 정의
+- `max_depth` 인자를 `MAX_DEPTH_ARG` 변수로 분리해 검증 로직 명확화
+- 항목별 수정 시간 조회를 `stat` 2회에서 1회로 줄여 외부 명령 호출 감소
+- 옵션 충돌 경고와 숫자 인자 오류를 stderr로 일관되게 출력
+- 재귀 함수의 지역 변수명을 구체화해 가독성 개선
+
+빌드 및 검증:
+- `shc`와 `gcc`로 동적 실행 파일(`hashize`) 및 정적 실행 파일(`hashize_static`) 재빌드
+- 동적/정적 바이너리와 `hashize.sh.x`에서 `hashize version 1.0.9` 출력 확인
+- 문법 검사, 정렬, 출력 제한, 잘못된 인자 처리, SIGPIPE, SIGINT 종료 코드 130을 검증
+
+---
+최종 업데이트: 2026-09-09  
+관리자: domuji6@gmail.com  
+버전: 1.0.9

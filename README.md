@@ -40,11 +40,15 @@ cd df
 chmod +x hashize.sh
 sudo cp hashize.sh /usr/local/bin/hashize
 ```
-### Option 2. Precompiled Binary
+
+### Option 2. Build Binary from Source (Optional)
 ```bash
+# Compile to binary using shc & gcc
+shc -r -f hashize.sh
+gcc -O2 -o hashize hashize.sh.x.c
 sudo cp hashize /usr/local/bin/hashize
-sudo chmod +x /usr/local/bin/hashize
 ```
+
 ---
 
 ## 📖 Usage
@@ -52,6 +56,7 @@ sudo chmod +x /usr/local/bin/hashize
 ```bash
 hashize [OPTIONS] <directory> [max_depth]
 ```
+
 ### Options
 
 | Option | Description |
@@ -66,6 +71,7 @@ hashize [OPTIONS] <directory> [max_depth]
 | `-D NUM` | Limit number of directories to show (`0` = all) |
 | `-L NUM` | Limit number of files to show (`0` = all) |
 | `-c`, `--no-color` | Disable colored output |
+
 ---
 
 ## 💡 Examples
@@ -86,15 +92,16 @@ hashize -D 5 -L 10 /tmp
 # 5. Pipe to head (No broken pipe errors)
 hashize /var/log | head -20
 ```
+
 ---
 
 ## 👤 Author
 
 - **Author**: domuji6@gmail.com
-- **Repository**: [https://github.com/pasart6/df](https://github.com/pasart6/hashize)
+- **Repository**: [https://github.com/pasart6/df](https://github.com/pasart6/df)
 
 ---
 
 ## 📄 License
 
-This project is licensed under the MIT License / GPL (or your preferred license).
+This project is licensed under the MIT License.
