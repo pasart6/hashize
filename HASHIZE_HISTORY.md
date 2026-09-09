@@ -82,8 +82,7 @@ SIGPIPE 처리 완료:
 ```bash
 trap "cleanup; exit 0" PIPE
 printf -v line "format" args...
-if ! printf "%s" "$line" 2>/dev/null;
-then
+if ! printf "%s" "$line" 2>/dev/null; then
     remove_temp_file "$temp_file"
     return 0
 fi
@@ -206,8 +205,7 @@ CANCELLED=false
 
 handle_sigint() {
     CANCELLED=true
-    echo -e "\n\nOperation cancelled by user."
->&2
+    echo -e "\n\nOperation cancelled by user." >&2
     cleanup
     exit 130
 }
@@ -251,8 +249,7 @@ CANCELLED=false
 
 handle_sigint() {
     CANCELLED=true
-    echo -e "\n\nOperation cancelled by user."
->&2
+    echo -e "\n\nOperation cancelled by user." >&2
     cleanup
     exit 130
 }

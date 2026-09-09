@@ -26,14 +26,21 @@
 ## 📋 Requirements
 
 - **OS**: Linux
-- **Shell**: Bash 4.0+
+- **Shell**: Bash 4.0+ (when running script directly)
 - **Dependencies**: GNU coreutils (`du`, `stat`, `numfmt`)
 
 ---
 
 ## 🚀 Installation
 
-### Option 1. Direct Script Usage
+### Option 1. Quick Install (Pre-built Static Binary - Recommended)
+Download the standalone pre-built static binary directly:
+```bash
+sudo curl -fsSL https://raw.githubusercontent.com/pasart6/hashize/main/hashize_static -o /usr/local/bin/hashize
+sudo chmod +x /usr/local/bin/hashize
+```
+
+### Option 2. Direct Script Usage
 ```bash
 git clone https://github.com/pasart6/hashize.git
 cd hashize
@@ -41,12 +48,17 @@ chmod +x hashize.sh
 sudo cp hashize.sh /usr/local/bin/hashize
 ```
 
-### Option 2. Build Binary from Source (Optional)
+### Option 3. Build Binary from Source (Optional)
 ```bash
-# Compile to binary using shc & gcc
+# Dynamic binary
 shc -r -f hashize.sh
 gcc -O2 -o hashize hashize.sh.x.c
+strip hashize
 sudo cp hashize /usr/local/bin/hashize
+
+# Or Static binary
+gcc -static -O2 -o hashize_static hashize.sh.x.c
+strip hashize_static
 ```
 
 ---

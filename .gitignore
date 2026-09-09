@@ -1,12 +1,14 @@
 # Compiled binaries & artifacts
 hashize
-hashize_static
 *.x
 *.x.c
 *.out
 *.o
 *.so
 *.a
+
+# Allow pre-built static binary for standalone distribution
+!hashize_static
 
 # Backup & temporary test files
 *.bak
