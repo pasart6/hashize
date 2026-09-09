@@ -35,8 +35,8 @@
 
 ### Option 1. Direct Script Usage
 ```bash
-git clone https://github.com/pasart6/df.git
-cd df
+git clone https://github.com/pasart6/hashize.git
+cd hashize
 chmod +x hashize.sh
 sudo cp hashize.sh /usr/local/bin/hashize
 ```
@@ -98,7 +98,7 @@ hashize /var/log | head -20
 ## 👤 Author
 
 - **Author**: domuji6@gmail.com
-- **Repository**: [https://github.com/pasart6/df](https://github.com/pasart6/df)
+- **Repository**: [https://github.com/pasart6/hashize](https://github.com/pasart6/hashize)
 
 ---
 
