@@ -164,20 +164,70 @@ fi
 
 DELIM=$'\t'
 
-# Metadata index filled by one du run and one find run (see build_index)
-E_REL=()      # path relative to TARGET_DIR
-E_NAME=()     # basename
-E_SIZE=()     # size in bytes (directory total for directories)
-E_HSIZE=()    # human-readable size
-E_MTIME=()    # modification time, epoch seconds
-E_MTIME_H=()  # modification time, "YYYY-MM-DD HH:MM:SS"
-E_IS_DIR=()   # 1 for directories, 0 otherwise
-declare -A DIR_SIZE=()  # relative dir path -> total bytes
-declare -A CHILDREN=()  # relative dir path ("." for root) -> " idx idx ..."
+declare -A DIR_SIZE=()     # relative dir path -> total bytes (from du)
+declare -A REC=()          # sorted position -> "id<TAB>is_dir<TAB>hsize<TAB>mtime<TAB>path"
+declare -A GROUP_START=()  # group id -> first position in REC
+declare -A GROUP_COUNT=()  # group id -> number of entries in the group
 
-# Traverse the filesystem once instead of running du for every item.
-# Records are NUL-terminated and the path is the last tab-separated field,
-# so names containing tabs or newlines are handled safely.
+# Emit one sortable record per entry found by find:
+#   group<TAB>key<TAB>id<TAB>is_dir<TAB>size<TAB>mtime<TAB>path\0
+# group is the parent directory id (root = 0), id is the entry's own
+# directory id (-1 for non-directories). path is last, so names containing
+# tabs or newlines stay intact. In files-only mode every file is put in
+# group 0 so files from all levels are listed together.
+emit_records() {
+    local rec type rest size mtime mtime_h path parent group id is_dir key
+    local next_id=1
+    local -A dir_id=(["."]=0)
+
+    while IFS= read -r -d '' rec; do
+        type="${rec%%$'\t'*}";    rest="${rec#*$'\t'}"
+        size="${rest%%$'\t'*}";   rest="${rest#*$'\t'}"
+        mtime="${rest%%$'\t'*}";  rest="${rest#*$'\t'}"
+        mtime_h="${rest%%$'\t'*}"; path="${rest#*$'\t'}"
+
+        case "$path" in
+            */*) parent="${path%/*}" ;;
+            *)   parent="." ;;
+        esac
+
+        if [ "$type" = "d" ]; then
+            [ "$SHOW_TYPE" = "files" ] && continue
+            id="$next_id"
+            next_id=$((next_id + 1))
+            dir_id["$path"]="$id"
+            is_dir=1
+            size="${DIR_SIZE[$path]:-0}"
+        else
+            [ "$SHOW_TYPE" = "dirs" ] && continue
+            id=-1
+            is_dir=0
+        fi
+
+        if [ "$SHOW_TYPE" = "files" ]; then
+            group=0
+        else
+            # find lists a directory before its contents, so the parent id exists
+            group="${dir_id[$parent]:-}"
+            [ -z "$group" ] && continue
+        fi
+
+        case "$SORT_BY" in
+            size) key="$size" ;;
+            time) key="${mtime%.*}" ;;
+            *)    key=0 ;;
+        esac
+
+        printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\0' \
+            "$group" "$key" "$id" "$is_dir" "$size" "${mtime_h%.*}" "$path"
+    done < <(cd -- "$TARGET_DIR" && find . -mindepth 1 -maxdepth "$MAX_DEPTH" \
+                -printf '%y\t%s\t%T@\t%TY-%Tm-%Td %TH:%TM:%TS\t%P\0' 2>/dev/null)
+}
+
+# Traverse the filesystem once (one du, one find) instead of running du for
+# every item, then sort all entries once by (group, key). Results are kept in
+# associative arrays: Bash indexed arrays are linked lists, so random access
+# into a large one costs O(N) per lookup.
 build_index() {
     local rec size path
 
@@ -192,40 +242,33 @@ build_index() {
 
     [ "$CANCELLED" = true ] && return 1
 
-    local type rest mtime mtime_h parent i=0
+    # Siblings share the parent prefix, so comparing the path (field 7 to end)
+    # orders them by name; size/time ties fall back to reverse name as in 1.0.9.
+    local sort_opts=(-z -t "$DELIM" -k1,1n)
+    if [ "$SORT_BY" = "name" ]; then
+        sort_opts+=(-k7)
+    else
+        sort_opts+=(-k2,2rn -k7r)
+    fi
+
+    local group pos=0 last_group=""
     while IFS= read -r -d '' rec; do
-        type="${rec%%$'\t'*}";    rest="${rec#*$'\t'}"
-        size="${rest%%$'\t'*}";   rest="${rest#*$'\t'}"
-        mtime="${rest%%$'\t'*}";  rest="${rest#*$'\t'}"
-        mtime_h="${rest%%$'\t'*}"; path="${rest#*$'\t'}"
-
-        E_REL[i]="$path"
-        E_NAME[i]="${path##*/}"
-        if [ "$type" = "d" ]; then
-            E_IS_DIR[i]=1
-            size="${DIR_SIZE[$path]:-0}"
-        else
-            E_IS_DIR[i]=0
+        group="${rec%%$'\t'*}"
+        rec="${rec#*$'\t'}"
+        REC[$pos]="${rec#*$'\t'}"
+        if [ "$group" != "$last_group" ]; then
+            GROUP_START[$group]="$pos"
+            GROUP_COUNT[$group]=0
+            last_group="$group"
         fi
-        E_SIZE[i]="$size"
-        E_MTIME[i]="${mtime%.*}"
-        E_MTIME_H[i]="${mtime_h%.*}"
-
-        case "$path" in
-            */*) parent="${path%/*}" ;;
-            *)   parent="." ;;
-        esac
-        CHILDREN["$parent"]+=" $i"
-        i=$((i + 1))
-    done < <(cd -- "$TARGET_DIR" && find . -mindepth 1 -maxdepth "$MAX_DEPTH" \
-                -printf '%y\t%s\t%T@\t%TY-%Tm-%Td %TH:%TM:%TS\t%P\0' 2>/dev/null)
+        GROUP_COUNT[$group]=$((GROUP_COUNT[$group] + 1))
+        pos=$((pos + 1))
+    done < <(emit_records |
+             numfmt -z -d "$DELIM" --field=5 --to=iec-i --suffix=B --invalid=ignore 2>/dev/null |
+             sort "${sort_opts[@]}")
 
     [ "$CANCELLED" = true ] && return 1
-
-    # Convert all sizes with a single numfmt call
-    if [ "$i" -gt 0 ]; then
-        mapfile -t E_HSIZE < <(printf '%s\n' "${E_SIZE[@]}" | numfmt --to=iec-i --suffix=B 2>/dev/null)
-    fi
+    return 0
 }
 
 print_tree() {
@@ -234,7 +277,7 @@ print_tree() {
         return 1
     fi
 
-    local rel="$1"
+    local group="$1"
     local depth="$2"
     local prefix="$3"
 
@@ -242,40 +285,11 @@ print_tree() {
         return 0
     fi
 
-    local idx
-    local entries=()
-    for idx in ${CHILDREN[$rel]}; do
-        if [ "$SHOW_TYPE" = "files" ] && [ "${E_IS_DIR[idx]}" -eq 1 ]; then
-            continue
-        fi
-        if [ "$SHOW_TYPE" = "dirs" ] && [ "${E_IS_DIR[idx]}" -eq 0 ]; then
-            continue
-        fi
-        entries+=("$idx")
-    done
-
-    if [ "${#entries[@]}" -eq 0 ]; then
+    local start="${GROUP_START[$group]:-}"
+    if [ -z "$start" ]; then
         return 0
     fi
-
-    # Sort records are "key<TAB>...<TAB>idx"; only the index comes back
-    local sorted=()
-    mapfile -t sorted < <(
-        for idx in "${entries[@]}"; do
-            case "$SORT_BY" in
-                size) printf '%s\t%s\t%s\0' "${E_SIZE[idx]}" "${E_NAME[idx]}" "$idx" ;;
-                time) printf '%s\t%s\t%s\0' "${E_MTIME[idx]}" "${E_NAME[idx]}" "$idx" ;;
-                *)    printf '%s\t%s\0' "${E_NAME[idx]}" "$idx" ;;
-            esac
-        done | if [ "$SORT_BY" = "name" ]; then sort -z -t"$DELIM" -k1,1; else sort -z -rn; fi |
-        while IFS= read -r -d '' rec; do
-            printf '%s\n' "${rec##*$'\t'}"
-        done
-    )
-
-    if [ "$CANCELLED" = true ]; then
-        return 1
-    fi
+    local end=$((start + GROUP_COUNT[$group]))
 
     # Apply -D / -L limits before drawing so branch connectors match output
     local shown=()
@@ -284,8 +298,11 @@ print_tree() {
     local hidden_dirs=0
     local hidden_files=0
 
-    for idx in "${sorted[@]}"; do
-        if [ "${E_IS_DIR[idx]}" -eq 1 ]; then
+    local pos rec is_dir
+    for ((pos = start; pos < end; pos++)); do
+        rec="${REC[$pos]#*$'\t'}"
+        is_dir="${rec%%$'\t'*}"
+        if [ "$is_dir" -eq 1 ]; then
             if [ "$LIMIT_DIRS" -gt 0 ] && [ "$shown_dirs" -ge "$LIMIT_DIRS" ]; then
                 hidden_dirs=$((hidden_dirs + 1))
                 continue
@@ -298,7 +315,7 @@ print_tree() {
             fi
             shown_files=$((shown_files + 1))
         fi
-        shown+=("$idx")
+        shown+=("$pos")
     done
 
     local has_summary=0
@@ -309,7 +326,7 @@ print_tree() {
     local total="${#shown[@]}"
     local i=0
 
-    for idx in "${shown[@]}"; do
+    for pos in "${shown[@]}"; do
         # Check cancellation in output loop
         if [ "$CANCELLED" = true ]; then
             return 1
@@ -323,10 +340,18 @@ print_tree() {
             next="    "
         fi
 
-        local item_name="${E_NAME[idx]}"
-        local item_size="${E_HSIZE[idx]:-${E_SIZE[idx]}B}"
-        local item_mtime="${E_MTIME_H[idx]:-N/A}"
-        local item_is_dir="${E_IS_DIR[idx]}"
+        # Record: id, is_dir, human size, mtime, relative path
+        rec="${REC[$pos]}"
+        local item_id="${rec%%$'\t'*}";      rec="${rec#*$'\t'}"
+        local item_is_dir="${rec%%$'\t'*}";  rec="${rec#*$'\t'}"
+        local item_size="${rec%%$'\t'*}";    rec="${rec#*$'\t'}"
+        local item_mtime="${rec%%$'\t'*}";   rec="${rec#*$'\t'}"
+        local item_name="$rec"
+        # Files-only mode lists every level together, so keep the path
+        if [ "$SHOW_TYPE" != "files" ]; then
+            item_name="${rec##*/}"
+        fi
+        [ -z "$item_mtime" ] && item_mtime="N/A"
 
         # Display format depends on sort type
         local line=""
@@ -349,7 +374,7 @@ print_tree() {
         fi
 
         if [ "$item_is_dir" -eq 1 ] && [ $depth -lt $((MAX_DEPTH - 1)) ]; then
-            print_tree "${E_REL[idx]}" $((depth + 1)) "$prefix$next"
+            print_tree "$item_id" $((depth + 1)) "$prefix$next"
             # Check if recursion was cancelled
             if [ "$CANCELLED" = true ]; then
                 return 1
@@ -377,5 +402,5 @@ print_tree() {
 
 echo "$TARGET_DIR"
 if [ "$MAX_DEPTH" -gt 0 ]; then
-    build_index && print_tree "." 0 ""
+    build_index && print_tree 0 0 ""
 fi
