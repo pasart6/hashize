@@ -1,6 +1,6 @@
 #!/bin/bash
 
-VERSION="1.0.9"
+VERSION="1.0.10"
 AUTHOR="domuji6@gmail.com"
 TARGET_DIR=""
 MAX_DEPTH=1
@@ -13,15 +13,6 @@ USE_COLOR=true
 # Cancellation flag
 CANCELLED=false
 
-# Cleanup temp files on exit
-TEMP_FILES=()
-cleanup() {
-    CANCELLED=true
-    for f in "${TEMP_FILES[@]}"; do
-        rm -f "$f" 2>/dev/null
-    done
-}
-
 # Handle SIGINT (Ctrl+C) gracefully
 handle_sigint() {
     CANCELLED=true
@@ -30,27 +21,8 @@ handle_sigint() {
 }
 
 trap handle_sigint INT
-trap cleanup EXIT TERM
-trap "cleanup; exit 0" PIPE
-
-remove_temp_file() {
-    local target="$1"
-    local keep=()
-
-    for f in "${TEMP_FILES[@]}"; do
-        if [ "$f" != "$target" ]; then
-            keep+=("$f")
-        fi
-    done
-
-    if [ "${#keep[@]}" -gt 0 ]; then
-        TEMP_FILES=("${keep[@]}")
-    else
-        TEMP_FILES=()
-    fi
-
-    rm -f "$target" 2>/dev/null
-}
+trap "CANCELLED=true; exit 143" TERM
+trap "exit 0" PIPE
 
 usage() {
     local exit_code="${1:-0}"
@@ -89,11 +61,14 @@ DESCRIPTION:
   - Green color: Files
   - Hidden items shown as: more directory(+N) or more file(+N)
   - When sorted by time (-t), modification date is displayed
+  - Hidden (dot) files and directories are included
+  - Symbolic links are listed as files and are not followed
   - Press Ctrl+C to cancel operation at any time
 
 REQUIREMENTS:
-  - GNU coreutils (du, stat, numfmt)
-  - Linux platform (for stat -c format)
+  - Bash 4.0+ (associative arrays)
+  - GNU coreutils (du, numfmt, sort) and GNU findutils (find -printf)
+  - Linux platform
 
 USAGE
     exit "$exit_code"
@@ -186,186 +161,200 @@ else
     RESET=''
 fi
 
-# Use tab as delimiter to avoid conflicts with filenames
-DELIM=$'\t'
+# Metadata index filled by one du run and one find run (see build_index)
+E_REL=()      # path relative to TARGET_DIR
+E_NAME=()     # basename
+E_SIZE=()     # size in bytes (directory total for directories)
+E_HSIZE=()    # human-readable size
+E_MTIME=()    # modification time, epoch seconds
+E_MTIME_H=()  # modification time, "YYYY-MM-DD HH:MM:SS"
+E_IS_DIR=()   # 1 for directories, 0 otherwise
+declare -A DIR_SIZE=()  # relative dir path -> total bytes
+declare -A CHILDREN=()  # relative dir path ("." for root) -> " idx idx ..."
+
+# Traverse the filesystem once instead of running du for every item.
+# Records are NUL-terminated and the path is the last tab-separated field,
+# so names containing tabs or newlines are handled safely.
+build_index() {
+    local rec size path
+
+    # -l counts hard-linked files in every directory that holds them, so a
+    # directory total never depends on which directory du visited first.
+    while IFS= read -r -d '' rec; do
+        size="${rec%%$'\t'*}"
+        path="${rec#*$'\t'}"
+        [ "$path" != "." ] && path="${path#./}"
+        DIR_SIZE["$path"]="$size"
+    done < <(cd -- "$TARGET_DIR" && du -b -l -0 --max-depth="$MAX_DEPTH" . 2>/dev/null)
+
+    [ "$CANCELLED" = true ] && return 1
+
+    local type rest mtime mtime_h parent i=0
+    while IFS= read -r -d '' rec; do
+        type="${rec%%$'\t'*}";    rest="${rec#*$'\t'}"
+        size="${rest%%$'\t'*}";   rest="${rest#*$'\t'}"
+        mtime="${rest%%$'\t'*}";  rest="${rest#*$'\t'}"
+        mtime_h="${rest%%$'\t'*}"; path="${rest#*$'\t'}"
+
+        E_REL[i]="$path"
+        E_NAME[i]="${path##*/}"
+        if [ "$type" = "d" ]; then
+            E_IS_DIR[i]=1
+            size="${DIR_SIZE[$path]:-0}"
+        else
+            E_IS_DIR[i]=0
+        fi
+        E_SIZE[i]="$size"
+        E_MTIME[i]="${mtime%.*}"
+        E_MTIME_H[i]="${mtime_h%.*}"
+
+        case "$path" in
+            */*) parent="${path%/*}" ;;
+            *)   parent="." ;;
+        esac
+        CHILDREN["$parent"]+=" $i"
+        i=$((i + 1))
+    done < <(cd -- "$TARGET_DIR" && find . -mindepth 1 -maxdepth "$MAX_DEPTH" \
+                -printf '%y\t%s\t%T@\t%TY-%Tm-%Td %TH:%TM:%TS\t%P\0' 2>/dev/null)
+
+    [ "$CANCELLED" = true ] && return 1
+
+    # Convert all sizes with a single numfmt call
+    if [ "$i" -gt 0 ]; then
+        mapfile -t E_HSIZE < <(printf '%s\n' "${E_SIZE[@]}" | numfmt --to=iec-i --suffix=B 2>/dev/null)
+    fi
+}
 
 print_tree() {
     # Check cancellation at the start of each recursion
     if [ "$CANCELLED" = true ]; then
         return 1
     fi
-    
-    local dir="$1"
+
+    local rel="$1"
     local depth="$2"
     local prefix="$3"
-    
-    if [ "$depth" -ge "$MAX_DEPTH" ] || [ ! -d "$dir" ]; then
+
+    if [ "$depth" -ge "$MAX_DEPTH" ]; then
         return 0
     fi
-    
-    local temp_file
-    temp_file=$(mktemp)
-    TEMP_FILES+=("$temp_file")
-    
-    for item in "$dir"/*; do
-        # Check cancellation in the loop
-        if [ "$CANCELLED" = true ]; then
-            remove_temp_file "$temp_file"
-            return 1
-        fi
-        
-        [ ! -e "$item" ] && continue
-        local name
-        name=$(basename "$item")
-        local is_dir=0
-        [ -d "$item" ] && is_dir=1
-        
-        if [ "$SHOW_TYPE" = "files" ] && [ "$is_dir" -eq 1 ]; then
+
+    local idx
+    local entries=()
+    for idx in ${CHILDREN[$rel]}; do
+        if [ "$SHOW_TYPE" = "files" ] && [ "${E_IS_DIR[idx]}" -eq 1 ]; then
             continue
         fi
-        if [ "$SHOW_TYPE" = "dirs" ] && [ "$is_dir" -eq 0 ]; then
+        if [ "$SHOW_TYPE" = "dirs" ] && [ "${E_IS_DIR[idx]}" -eq 0 ]; then
             continue
         fi
-        
-        # Get byte size
-        local size_bytes
-        size_bytes=$(du -sb "$item" 2>/dev/null | cut -f1)
-        
-        # Check if du was interrupted
-        if [ "$CANCELLED" = true ]; then
-            remove_temp_file "$temp_file"
-            return 1
-        fi
-        
-        # Handle failures
-        if [ -z "$size_bytes" ]; then
-            size_bytes=0
-        fi
-        
-        local size_human
-        size_human=$(numfmt --to=iec-i --suffix=B "$size_bytes" 2>/dev/null)
-        if [ -z "$size_human" ]; then
-            size_human="${size_bytes}B"
-        fi
-        
-        # Get modification time in a single stat call
-        local stat_out
-        stat_out=$(stat -c "%Y %y" "$item" 2>/dev/null)
-        local mtime="${stat_out%% *}"
-        local mtime_human="${stat_out#* }"
-        mtime_human="${mtime_human%.*}"
-        if [ -z "$mtime" ]; then
-            mtime=0
-            mtime_human="N/A"
-        fi
-        
-        local sort_key
-        if [ "$SORT_BY" = "size" ]; then
-            sort_key="$size_bytes"
-        elif [ "$SORT_BY" = "time" ]; then
-            sort_key="$mtime"
-        else
-            sort_key="$name"
-        fi
-        
-        # Use tab as delimiter: sort_key, name, size, mtime_human, is_dir
-        echo "${sort_key}${DELIM}${name}${DELIM}${size_human}${DELIM}${mtime_human}${DELIM}${is_dir}" >> "$temp_file"
+        entries+=("$idx")
     done
-    
-    if [ ! -s "$temp_file" ]; then
-        remove_temp_file "$temp_file"
+
+    if [ "${#entries[@]}" -eq 0 ]; then
         return 0
     fi
-    
+
+    # Sort records are "key<TAB>...<TAB>idx"; only the index comes back
+    local sorted=()
+    mapfile -t sorted < <(
+        for idx in "${entries[@]}"; do
+            case "$SORT_BY" in
+                size) printf '%s\t%s\t%s\0' "${E_SIZE[idx]}" "${E_NAME[idx]}" "$idx" ;;
+                time) printf '%s\t%s\t%s\0' "${E_MTIME[idx]}" "${E_NAME[idx]}" "$idx" ;;
+                *)    printf '%s\t%s\0' "${E_NAME[idx]}" "$idx" ;;
+            esac
+        done | if [ "$SORT_BY" = "name" ]; then sort -z; else sort -z -rn; fi |
+        while IFS= read -r -d '' rec; do
+            printf '%s\n' "${rec##*$'\t'}"
+        done
+    )
+
     if [ "$CANCELLED" = true ]; then
-        remove_temp_file "$temp_file"
         return 1
     fi
-    
-    local count=0
-    local dir_count=0
-    local file_count=0
-    
-    while IFS=$'\t' read -r _ item_name item_size item_mtime item_is_dir; do
-        ((count++))
-        if [ "$item_is_dir" -eq 1 ]; then
-            ((dir_count++))
-        else
-            ((file_count++))
-        fi
-    done < "$temp_file"
-    
-    local i=0
+
+    # Apply -D / -L limits before drawing so branch connectors match output
+    local shown=()
     local shown_dirs=0
     local shown_files=0
     local hidden_dirs=0
     local hidden_files=0
-    
-    while IFS=$'\t' read -r _ item_name item_size item_mtime item_is_dir; do
-        # Check cancellation in output loop
-        if [ "$CANCELLED" = true ]; then
-            remove_temp_file "$temp_file"
-            return 1
-        fi
-        
-        ((i++))
-        local is_last=$((i == count ? 1 : 0))
-        local branch=$([[ $is_last == 1 ]] && echo "└── " || echo "├── ")
-        
-        local should_show=1
-        
-        if [ "$item_is_dir" -eq 1 ]; then
+
+    for idx in "${sorted[@]}"; do
+        if [ "${E_IS_DIR[idx]}" -eq 1 ]; then
             if [ "$LIMIT_DIRS" -gt 0 ] && [ "$shown_dirs" -ge "$LIMIT_DIRS" ]; then
-                ((hidden_dirs++))
-                should_show=0
-            else
-                ((shown_dirs++))
+                hidden_dirs=$((hidden_dirs + 1))
+                continue
             fi
+            shown_dirs=$((shown_dirs + 1))
         else
             if [ "$LIMIT_FILES" -gt 0 ] && [ "$shown_files" -ge "$LIMIT_FILES" ]; then
-                ((hidden_files++))
-                should_show=0
-            else
-                ((shown_files++))
+                hidden_files=$((hidden_files + 1))
+                continue
             fi
+            shown_files=$((shown_files + 1))
         fi
-        
-        if [ "$should_show" -eq 1 ]; then
-            # Display format depends on sort type
-            local line=""
-            if [ "$SORT_BY" = "time" ]; then
-                if [ "$item_is_dir" -eq 1 ]; then
-                    printf -v line "%s%s${BLUE}%s/${RESET} [%s] %s\n" "$prefix" "$branch" "$item_name" "$item_size" "$item_mtime"
-                else
-                    printf -v line "%s%s${GREEN}%s${RESET} [%s] %s\n" "$prefix" "$branch" "$item_name" "$item_size" "$item_mtime"
-                fi
-            else
-                if [ "$item_is_dir" -eq 1 ]; then
-                    printf -v line "%s%s${BLUE}%s/${RESET} [%s]\n" "$prefix" "$branch" "$item_name" "$item_size"
-                else
-                    printf -v line "%s%s${GREEN}%s${RESET} [%s]\n" "$prefix" "$branch" "$item_name" "$item_size"
-                fi
-            fi
+        shown+=("$idx")
+    done
 
-            if ! printf "%s" "$line" 2>/dev/null; then
-                remove_temp_file "$temp_file"
-                return 0
+    local has_summary=0
+    if [ "$hidden_dirs" -gt 0 ] || [ "$hidden_files" -gt 0 ]; then
+        has_summary=1
+    fi
+
+    local total="${#shown[@]}"
+    local i=0
+
+    for idx in "${shown[@]}"; do
+        # Check cancellation in output loop
+        if [ "$CANCELLED" = true ]; then
+            return 1
+        fi
+
+        i=$((i + 1))
+        local branch="├── "
+        local next="│   "
+        if [ "$i" -eq "$total" ] && [ "$has_summary" -eq 0 ]; then
+            branch="└── "
+            next="    "
+        fi
+
+        local item_name="${E_NAME[idx]}"
+        local item_size="${E_HSIZE[idx]:-${E_SIZE[idx]}B}"
+        local item_mtime="${E_MTIME_H[idx]:-N/A}"
+        local item_is_dir="${E_IS_DIR[idx]}"
+
+        # Display format depends on sort type
+        local line=""
+        if [ "$SORT_BY" = "time" ]; then
+            if [ "$item_is_dir" -eq 1 ]; then
+                printf -v line "%s%s${BLUE}%s/${RESET} [%s] %s\n" "$prefix" "$branch" "$item_name" "$item_size" "$item_mtime"
+            else
+                printf -v line "%s%s${GREEN}%s${RESET} [%s] %s\n" "$prefix" "$branch" "$item_name" "$item_size" "$item_mtime"
             fi
-            
-            local fullpath="$dir/$item_name"
-            if [ "$item_is_dir" -eq 1 ] && [ $depth -lt $((MAX_DEPTH - 1)) ]; then
-                local next=$([[ $is_last == 1 ]] && echo "    " || echo "│   ")
-                print_tree "$fullpath" $((depth + 1)) "$prefix$next"
-                # Check if recursion was cancelled
-                if [ "$CANCELLED" = true ]; then
-                    remove_temp_file "$temp_file"
-                    return 1
-                fi
+        else
+            if [ "$item_is_dir" -eq 1 ]; then
+                printf -v line "%s%s${BLUE}%s/${RESET} [%s]\n" "$prefix" "$branch" "$item_name" "$item_size"
+            else
+                printf -v line "%s%s${GREEN}%s${RESET} [%s]\n" "$prefix" "$branch" "$item_name" "$item_size"
             fi
         fi
-    done < <(if [ "$SORT_BY" = "name" ]; then sort -t"$DELIM" -k2; else sort -rn; fi < "$temp_file")
-    
-    if [ "$hidden_dirs" -gt 0 ] || [ "$hidden_files" -gt 0 ]; then
+
+        if ! printf "%s" "$line" 2>/dev/null; then
+            return 0
+        fi
+
+        if [ "$item_is_dir" -eq 1 ] && [ $depth -lt $((MAX_DEPTH - 1)) ]; then
+            print_tree "${E_REL[idx]}" $((depth + 1)) "$prefix$next"
+            # Check if recursion was cancelled
+            if [ "$CANCELLED" = true ]; then
+                return 1
+            fi
+        fi
+    done
+
+    if [ "$has_summary" -eq 1 ]; then
         local summary=""
         if [ "$hidden_dirs" -gt 0 ]; then
             summary="${GRAY}more directory(+${hidden_dirs})${RESET}"
@@ -378,13 +367,12 @@ print_tree() {
             fi
         fi
         if ! printf "%s└── %b\n" "$prefix" "$summary" 2>/dev/null; then
-            remove_temp_file "$temp_file"
             return 0
         fi
     fi
-
-    remove_temp_file "$temp_file"
 }
 
 echo "$TARGET_DIR"
-print_tree "$TARGET_DIR" 0 ""
+if [ "$MAX_DEPTH" -gt 0 ]; then
+    build_index && print_tree "." 0 ""
+fi
