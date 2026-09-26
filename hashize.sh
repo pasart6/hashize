@@ -134,7 +134,8 @@ if [ -n "$MAX_DEPTH_ARG" ]; then
         echo "Error: max_depth must be a non-negative integer" >&2
         exit 1
     fi
-    MAX_DEPTH="$MAX_DEPTH_ARG"
+    # Force base 10 so values like "08" are not parsed as octal
+    MAX_DEPTH=$((10#$MAX_DEPTH_ARG))
 fi
 
 # Validate conflicting options
@@ -160,6 +161,8 @@ else
     GRAY=''
     RESET=''
 fi
+
+DELIM=$'\t'
 
 # Metadata index filled by one du run and one find run (see build_index)
 E_REL=()      # path relative to TARGET_DIR
@@ -264,7 +267,7 @@ print_tree() {
                 time) printf '%s\t%s\t%s\0' "${E_MTIME[idx]}" "${E_NAME[idx]}" "$idx" ;;
                 *)    printf '%s\t%s\0' "${E_NAME[idx]}" "$idx" ;;
             esac
-        done | if [ "$SORT_BY" = "name" ]; then sort -z; else sort -z -rn; fi |
+        done | if [ "$SORT_BY" = "name" ]; then sort -z -t"$DELIM" -k1,1; else sort -z -rn; fi |
         while IFS= read -r -d '' rec; do
             printf '%s\n' "${rec##*$'\t'}"
         done
