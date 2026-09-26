@@ -29,7 +29,9 @@
 
 - **OS**: Linux
 - **Shell**: `/bin/bash` 4.0+ (required for both the script and the pre-built binary)
-- **Dependencies**: GNU coreutils (`du`, `numfmt`, `sort`), GNU findutils (`find`)
+- **Dependencies**: GNU coreutils (`du`, `numfmt`, `sort`, `mktemp`), GNU findutils (`find`)
+
+Missing or unsupported commands are detected before any output; `hashize` then prints the reason and exits with status 1.
 
 > The pre-built `hashize_static` is **not** a self-contained program. It is an [shc](https://github.com/neurobin/shc) wrapper: the statically linked part only decodes the embedded script and runs it with `/bin/bash`, which then calls the tools above. All requirements apply when running the binary too.
 
@@ -84,8 +86,8 @@ hashize [OPTIONS] <directory> [max_depth]
 | `-t` | Sort by modification time (newest first, displays datetime) |
 | `-f` | Show files only (all levels up to `max_depth`, shown as relative paths) |
 | `-d` | Show directories only |
-| `-D NUM` | Limit number of directories to show (`0` = all) |
-| `-L NUM` | Limit number of files to show (`0` = all) |
+| `-D NUM` | Limit directories shown per directory (`0` = all). Output limit only; everything is still scanned |
+| `-L NUM` | Limit files shown per directory (`0` = all; with `-f`, in total). Output limit only |
 | `-c`, `--no-color` | Disable colored output |
 
 ---
@@ -111,6 +113,29 @@ hashize -f -L 10 /var 3
 # 6. Pipe to head (No broken pipe errors)
 hashize /var/log | head -20
 ```
+
+---
+
+## ⚠️ Notes & Limitations
+
+- **Logical sizes, not disk usage**: Sizes are apparent sizes in bytes (`du -b` / `find %s`). Sparse or compressed files and block rounding make them differ from the space actually allocated on disk (`du -h`).
+- **Hard links**: Counted once per link (`du -l`), so a directory total can exceed its real usage when it contains several links to the same file.
+- **Two passes**: Directory totals come from `du` and entries from `find`, run one after the other. Files created, removed or resized in between can make the two disagree.
+- **Scan depth**: Directory totals need every level below the target, so outside `-f` the whole tree is scanned even with a small `max_depth`. `-f` does not run `du` and only scans up to `max_depth`.
+- **`-D` / `-L`** only limit what is printed; all entries are still scanned and sorted.
+- **`-f`** lists every non-directory entry — regular files, symbolic links, FIFOs, sockets and device files — with its path relative to the target. With `-n` it is sorted by that full relative path.
+- **`-t`** sorts by the full (sub-second) modification time; only seconds are displayed.
+- **Unusual file names**: Names are kept unchanged internally. On screen, control characters are escaped (`\t`, `\n`, `\r`, `\xHH`, C1 as `\u00HH`) so every entry stays on one line and cannot send terminal control sequences. Hangul, spaces and ordinary symbols are shown as is; backslashes are not escaped, so a literal `\n` in a name looks the same as an escaped newline.
+- **Incomplete results**: If some paths cannot be read (e.g. permission denied), the tree is still printed, followed by a warning with the reasons on stderr, and the exit status is 2. Affected directories may be missing entries or show sizes that are too small.
+
+### Exit Status
+
+| Code | Meaning |
+| :--- | :--- |
+| `0` | Success |
+| `1` | Error: invalid argument, missing/unsupported command, or a command failed |
+| `2` | Incomplete results: some paths could not be read |
+| `130` | Cancelled with `Ctrl+C` |
 
 ---
 
