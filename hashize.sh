@@ -1,6 +1,6 @@
 #!/bin/bash
 
-VERSION="1.0.10"
+VERSION="1.0.11"
 AUTHOR="domuji6@gmail.com"
 TARGET_DIR=""
 MAX_DEPTH=1
@@ -38,7 +38,7 @@ OPTIONS:
   -s               Sort by size (largest first) - default
   -n               Sort by name (alphabetical)
   -t               Sort by modification time (newest first)
-  -f               Show files only
+  -f               Show files only (all levels up to max_depth, as paths)
   -d               Show directories only
   -D NUM           Limit directories to show (0=all)
   -L NUM           Limit files to show (0=all)
@@ -49,6 +49,7 @@ EXAMPLES:
   hashize -n /var/www 3
   hashize -t /var/log            # Sort by date with date display
   hashize -f /var/www            # Files only
+  hashize -f -L 10 /var 3        # Top 10 files within 3 levels
   hashize -d /var/www            # Directories only
   hashize -D 5 /tmp              # Show top 5 directories
   hashize -D 5 -L 10 /tmp        # Show top 5 dirs and 10 files
