@@ -125,8 +125,9 @@ hashize /var/log | head -20
 - **`-D` / `-L`** only limit what is printed; all entries are still scanned and sorted.
 - **`-f`** lists every non-directory entry — regular files, symbolic links, FIFOs, sockets and device files — with its path relative to the target. With `-n` it is sorted by that full relative path.
 - **`-t`** sorts by the full (sub-second) modification time; only seconds are displayed.
-- **Unusual file names**: Names are kept unchanged internally. On screen, control characters are escaped (`\t`, `\n`, `\r`, `\xHH`, C1 as `\u00HH`) so every entry stays on one line and cannot send terminal control sequences. Hangul, spaces and ordinary symbols are shown as is; backslashes are not escaped, so a literal `\n` in a name looks the same as an escaped newline.
-- **Incomplete results**: If some paths cannot be read (e.g. permission denied), the tree is still printed, followed by a warning with the reasons on stderr, and the exit status is 2. Affected directories may be missing entries or show sizes that are too small.
+- **Unusual file names**: Names are kept unchanged internally. On screen, C0 control characters, DEL and UTF-8 encoded C1 controls are escaped (`\t`, `\n`, `\r`, `\xHH`, C1 as `\u00HH`), so a name cannot span several lines or emit those control characters. Hangul, spaces and ordinary symbols are shown as is. Not handled yet: backslashes are not escaped (a literal `\n` in a name looks the same as an escaped newline), and invalid UTF-8 byte sequences are printed unchanged.
+- **Incomplete results**: If some paths cannot be read (e.g. permission denied), the tree is still printed, followed by a warning with the first error messages on stderr, and the exit status is 2. Affected directories may be missing entries or show sizes that are too small. If the output is cut short by a closed pipe (e.g. `| head`), the exit status is 0 as before.
+- **Performance**: v1.0.12 adds failure checks and name escaping; on the measured trees it was about 20-30% slower than v1.0.11 (see HASHIZE_HISTORY.md).
 
 ### Exit Status
 

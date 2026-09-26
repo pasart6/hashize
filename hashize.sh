@@ -320,10 +320,20 @@ emit_records() {
                 # and entries within the same second keep their real order
                 if [[ "$mtime" == *.* ]]; then
                     frac="${mtime#*.}0000000000"
-                    key="${mtime%%.*}${frac:0:10}"
+                    frac="${frac:0:10}"
+                    key="${mtime%%.*}"
                 else
-                    key="${mtime}0000000000"
+                    frac=0000000000
+                    key="$mtime"
                 fi
+                # Before 1970 find prints floor(seconds) plus a positive
+                # fraction ("-1.9" is -0.1s), so borrow one second to get
+                # -(|sec| - 1).(1 - frac)
+                if [[ "$key" == -* ]] && [ "$frac" != 0000000000 ]; then
+                    printf -v frac '%010d' $((10000000000 - 10#$frac))
+                    key="-$(( ${key#-} - 1 ))"
+                fi
+                key="$key$frac"
                 ;;
             *)    key=0 ;;
         esac
