@@ -18,7 +18,9 @@
   - Limit the number of visible directories (`-D`) and files (`-L`) with fold summaries (`more directory(+N)`)
 - **Pipe & Signal Friendly**:
   - Fully handles `SIGPIPE` (safe to pipe into `head`, `tail`, `less`)
-  - Gracefully terminates and cleans up temporary files on `Ctrl+C` (`SIGINT`)
+  - Gracefully terminates on `Ctrl+C` (`SIGINT`, exit code 130)
+- **Single-Pass Scanning**: Sizes and timestamps are collected with one `du` run and one `find` run, so large trees are not re-scanned for every entry.
+- **Complete Listing**: Hidden (dot) files and directories are included; symbolic links are listed but not followed.
 - **Colorized Output**: Color-coded output for directories, files, and folded items (can be disabled with `-c` / `--no-color`).
 
 ---
@@ -27,7 +29,7 @@
 
 - **OS**: Linux
 - **Shell**: Bash 4.0+ (when running script directly)
-- **Dependencies**: GNU coreutils (`du`, `stat`, `numfmt`)
+- **Dependencies**: GNU coreutils (`du`, `numfmt`, `sort`), GNU findutils (`find`)
 
 ---
 
