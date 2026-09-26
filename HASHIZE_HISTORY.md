@@ -381,6 +381,13 @@ hashize -h && echo "Help OK"
 | 100만 항목, depth 3, `-f` | - | 217.6s / 403MiB |
 | 100만 항목, depth 3, `-d` | - | 64.8s / 10MiB |
 
+빌드 및 검증:
+- `shc 4.0.3` + `gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0`로 정적 실행 파일(`hashize_static`) 재빌드 (`shc -r -f`, `gcc -static -O2`, `strip`)
+- `hashize_static -v` → `hashize version 1.0.11`
+- 바이너리와 스크립트 출력 비교 145개 조합 일치, 도움말/인자 오류/SIGPIPE(0)/SIGINT(130) 확인
+- 스크립트 회귀 테스트 131개 통과 (v1.0.9·v1.0.10 출력 호환, `-f`/`-d`, `-D`/`-L`, depth 0/1/3/08, 숨김 파일, TAB/줄바꿈 파일명, 심볼릭/하드 링크, 시그널)
+- SHA256: `105c33f43d1e02b851deeb7ed5b8208ea0300cf2e0056d385b101f4e092d09af`
+
 ---
 최종 업데이트: 2026-09-26  
 관리자: domuji6@gmail.com  
