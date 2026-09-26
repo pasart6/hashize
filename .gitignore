@@ -7,7 +7,7 @@ hashize
 *.so
 *.a
 
-# Allow pre-built static binary for standalone distribution
+# Allow pre-built static binary (shc wrapper; needs /bin/bash at runtime)
 !hashize_static
 
 # Backup & temporary test files

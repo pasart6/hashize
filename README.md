@@ -28,15 +28,17 @@
 ## 📋 Requirements
 
 - **OS**: Linux
-- **Shell**: Bash 4.0+ (when running script directly)
+- **Shell**: `/bin/bash` 4.0+ (required for both the script and the pre-built binary)
 - **Dependencies**: GNU coreutils (`du`, `numfmt`, `sort`), GNU findutils (`find`)
+
+> The pre-built `hashize_static` is **not** a self-contained program. It is an [shc](https://github.com/neurobin/shc) wrapper: the statically linked part only decodes the embedded script and runs it with `/bin/bash`, which then calls the tools above. All requirements apply when running the binary too.
 
 ---
 
 ## 🚀 Installation
 
-### Option 1. Quick Install (Pre-built Static Binary - Recommended)
-Download the standalone pre-built static binary directly:
+### Option 1. Quick Install (Pre-built Binary - Recommended)
+Download the pre-built binary (an shc wrapper around `hashize.sh`). The target system still needs `/bin/bash` 4.0+, GNU coreutils and GNU findutils (see [Requirements](#-requirements)):
 ```bash
 sudo curl -fsSL https://raw.githubusercontent.com/pasart6/hashize/main/hashize_static -o /usr/local/bin/hashize
 sudo chmod +x /usr/local/bin/hashize
@@ -58,7 +60,7 @@ gcc -O2 -o hashize hashize.sh.x.c
 strip hashize
 sudo cp hashize /usr/local/bin/hashize
 
-# Or Static binary
+# Or statically linked wrapper (still runs the script with /bin/bash)
 gcc -static -O2 -o hashize_static hashize.sh.x.c
 strip hashize_static
 ```
@@ -121,4 +123,4 @@ hashize /var/log | head -20
 
 ## 📄 License
 
-This project is licensed under the MIT License.
+This project is licensed under the MIT License. See [LICENSE](LICENSE) for details.
