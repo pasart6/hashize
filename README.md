@@ -14,7 +14,7 @@
   - Sort by name (Alphabetical)
   - Sort by modification time (Newest first, displays timestamp)
 - **Display Filtering**:
-  - Filter directories only (`-d`) or files only (`-f`)
+  - Filter directories only (`-d`) or files only (`-f`, lists files from every level up to `max_depth` with their relative paths)
   - Limit the number of visible directories (`-D`) and files (`-L`) with fold summaries (`more directory(+N)`)
 - **Pipe & Signal Friendly**:
   - Fully handles `SIGPIPE` (safe to pipe into `head`, `tail`, `less`)
@@ -28,15 +28,17 @@
 ## 📋 Requirements
 
 - **OS**: Linux
-- **Shell**: Bash 4.0+ (when running script directly)
+- **Shell**: `/bin/bash` 4.0+ (required for both the script and the pre-built binary)
 - **Dependencies**: GNU coreutils (`du`, `numfmt`, `sort`), GNU findutils (`find`)
+
+> The pre-built `hashize_static` is **not** a self-contained program. It is an [shc](https://github.com/neurobin/shc) wrapper: the statically linked part only decodes the embedded script and runs it with `/bin/bash`, which then calls the tools above. All requirements apply when running the binary too.
 
 ---
 
 ## 🚀 Installation
 
-### Option 1. Quick Install (Pre-built Static Binary - Recommended)
-Download the standalone pre-built static binary directly:
+### Option 1. Quick Install (Pre-built Binary - Recommended)
+Download the pre-built binary (an shc wrapper around `hashize.sh`). The target system still needs `/bin/bash` 4.0+, GNU coreutils and GNU findutils (see [Requirements](#-requirements)):
 ```bash
 sudo curl -fsSL https://raw.githubusercontent.com/pasart6/hashize/main/hashize_static -o /usr/local/bin/hashize
 sudo chmod +x /usr/local/bin/hashize
@@ -58,7 +60,7 @@ gcc -O2 -o hashize hashize.sh.x.c
 strip hashize
 sudo cp hashize /usr/local/bin/hashize
 
-# Or Static binary
+# Or statically linked wrapper (still runs the script with /bin/bash)
 gcc -static -O2 -o hashize_static hashize.sh.x.c
 strip hashize_static
 ```
@@ -80,7 +82,7 @@ hashize [OPTIONS] <directory> [max_depth]
 | `-s` | Sort by size (largest first, default) |
 | `-n` | Sort by name (alphabetical) |
 | `-t` | Sort by modification time (newest first, displays datetime) |
-| `-f` | Show files only |
+| `-f` | Show files only (all levels up to `max_depth`, shown as relative paths) |
 | `-d` | Show directories only |
 | `-D NUM` | Limit number of directories to show (`0` = all) |
 | `-L NUM` | Limit number of files to show (`0` = all) |
@@ -103,7 +105,10 @@ hashize -d /var/www
 # 4. Limit to top 5 largest directories and 10 files in /tmp
 hashize -D 5 -L 10 /tmp
 
-# 5. Pipe to head (No broken pipe errors)
+# 5. Top 10 largest files anywhere within 3 levels of /var
+hashize -f -L 10 /var 3
+
+# 6. Pipe to head (No broken pipe errors)
 hashize /var/log | head -20
 ```
 
