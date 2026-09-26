@@ -1,6 +1,6 @@
 #!/bin/bash
 
-VERSION="1.0.11"
+VERSION="1.0.12"
 AUTHOR="domuji6@gmail.com"
 TARGET_DIR=""
 MAX_DEPTH=1
@@ -20,9 +20,90 @@ handle_sigint() {
     exit 130
 }
 
+# Scratch directory for command exit statuses and error output
+WORK_DIR=""
+cleanup() {
+    if [ -n "$WORK_DIR" ]; then
+        rm -rf -- "$WORK_DIR" 2>/dev/null
+    fi
+}
+
 trap handle_sigint INT
 trap "CANCELLED=true; exit 143" TERM
 trap "exit 0" PIPE
+trap cleanup EXIT
+
+# Largest value accepted for max_depth, -D and -L
+MAX_COUNT=2147483647
+
+# C0 control characters and DEL, used to detect names that need escaping
+CTRL_CHARS=""
+for ((c = 1; c < 32; c++)); do
+    printf -v oct '%03o' "$c"
+    printf -v ch "\\$oct"
+    CTRL_CHARS+="$ch"
+done
+CTRL_CHARS+=$'\177'
+unset c oct ch
+
+# Set SAFE to a single-line, terminal-safe form of $1 for display.
+# Tab/newline/CR become \t \n \r, other controls become \xHH (C1 as
+# \u00HH). Printable text, including Hangul and spaces, is kept as is.
+safe_text() {
+    local s="$1"
+
+    if [[ $s != *["$CTRL_CHARS"]* && $s != *$'\302'[$'\200'-$'\237']* ]]; then
+        SAFE="$s"
+        return
+    fi
+
+    local out="" i ch c1 hex
+    if [[ $s == *$'\302'[$'\200'-$'\237']* ]]; then
+        for ((c1 = 128; c1 < 160; c1++)); do
+            printf -v hex '%02x' "$c1"
+            printf -v ch "\\302\\x$hex"
+            s="${s//"$ch"/\\u00$hex}"
+        done
+    fi
+
+    for ((i = 0; i < ${#s}; i++)); do
+        ch="${s:i:1}"
+        case "$ch" in
+            $'\t') out+='\t' ;;
+            $'\n') out+='\n' ;;
+            $'\r') out+='\r' ;;
+            *)
+                if [[ $ch == ["$CTRL_CHARS"] ]]; then
+                    printf -v hex '\\x%02x' "'$ch"
+                    out+="$hex"
+                else
+                    out+="$ch"
+                fi
+                ;;
+        esac
+    done
+    SAFE="$out"
+}
+
+# Validate a non-negative decimal integer and set PARSED to its value.
+# Checked as a string first so huge values cannot overflow Bash arithmetic;
+# leading zeros are dropped so "08" means 8, not an octal literal.
+parse_count() {
+    local label="$1"
+    local value="$2"
+
+    if ! [[ "$value" =~ ^[0-9]+$ ]]; then
+        echo "Error: $label requires a non-negative integer" >&2
+        exit 1
+    fi
+    value="${value#"${value%%[!0]*}"}"
+    [ -z "$value" ] && value=0
+    if [ "${#value}" -gt "${#MAX_COUNT}" ] || [ "$value" -gt "$MAX_COUNT" ]; then
+        echo "Error: $label must be between 0 and $MAX_COUNT" >&2
+        exit 1
+    fi
+    PARSED="$value"
+}
 
 usage() {
     local exit_code="${1:-0}"
@@ -40,8 +121,8 @@ OPTIONS:
   -t               Sort by modification time (newest first)
   -f               Show files only (all levels up to max_depth, as paths)
   -d               Show directories only
-  -D NUM           Limit directories to show (0=all)
-  -L NUM           Limit files to show (0=all)
+  -D NUM           Limit directories shown per directory (0=all)
+  -L NUM           Limit files shown per directory (0=all; -f: in total)
   -c, --no-color   Disable colored output
 
 EXAMPLES:
@@ -66,9 +147,31 @@ DESCRIPTION:
   - Symbolic links are listed as files and are not followed
   - Press Ctrl+C to cancel operation at any time
 
+NOTES:
+  - Sizes are logical (apparent) sizes in bytes, not disk usage. Sparse or
+    compressed files and filesystem block rounding make them differ from
+    the space actually used (e.g. "du -h").
+  - Hard links are counted once per link, so a total can exceed real usage.
+  - Directory totals (du) and entries (find) are read in two passes; files
+    changing in between can make them disagree.
+  - Directory totals need every level below the target, so without -f the
+    whole tree is scanned even with a small max_depth. -f skips du.
+  - -D and -L only limit what is printed; everything is still scanned.
+  - -f lists every non-directory entry (files, symlinks, FIFOs, sockets,
+    devices); with -n it sorts by the full relative path.
+  - -t sorts by full modification time (sub-second); only seconds are shown.
+  - Control characters in names are shown escaped (\t, \n, \r, \xHH,
+    \u00HH); backslashes in names are shown as is.
+
+EXIT STATUS:
+  0    Success
+  1    Error (invalid argument, missing or failing command)
+  2    Incomplete results (some paths could not be read, e.g. permissions)
+  130  Cancelled with Ctrl+C
+
 REQUIREMENTS:
   - Bash 4.0+ (associative arrays)
-  - GNU coreutils (du, numfmt, sort) and GNU findutils (find -printf)
+  - GNU coreutils (du, numfmt, sort, mktemp) and GNU findutils (find -printf)
   - Linux platform
 
 USAGE
@@ -91,19 +194,13 @@ while getopts "hvsnftdcD:L:-:" opt; do
         f) SHOW_TYPE="files" ;;
         d) SHOW_TYPE="dirs" ;;
         c) USE_COLOR=false ;;
-        D) 
-            if ! [[ "$OPTARG" =~ ^[0-9]+$ ]]; then
-                echo "Error: -D requires a numeric argument" >&2
-                exit 1
-            fi
-            LIMIT_DIRS="$OPTARG" 
+        D)
+            parse_count "-D" "$OPTARG"
+            LIMIT_DIRS="$PARSED"
             ;;
-        L) 
-            if ! [[ "$OPTARG" =~ ^[0-9]+$ ]]; then
-                echo "Error: -L requires a numeric argument" >&2
-                exit 1
-            fi
-            LIMIT_FILES="$OPTARG" 
+        L)
+            parse_count "-L" "$OPTARG"
+            LIMIT_FILES="$PARSED"
             ;;
         -)
             case "${OPTARG}" in
@@ -125,18 +222,21 @@ if [ -z "$TARGET_DIR" ]; then
 fi
 
 if [ ! -d "$TARGET_DIR" ]; then
-    echo "Error: Directory '$TARGET_DIR' does not exist" >&2
+    safe_text "$TARGET_DIR"
+    echo "Error: Directory '$SAFE' does not exist" >&2
+    exit 1
+fi
+
+if ! (cd -- "$TARGET_DIR") 2>/dev/null; then
+    safe_text "$TARGET_DIR"
+    echo "Error: Cannot access directory '$SAFE' (permission denied?)" >&2
     exit 1
 fi
 
 MAX_DEPTH_ARG="${2:-}"
 if [ -n "$MAX_DEPTH_ARG" ]; then
-    if ! [[ "$MAX_DEPTH_ARG" =~ ^[0-9]+$ ]]; then
-        echo "Error: max_depth must be a non-negative integer" >&2
-        exit 1
-    fi
-    # Force base 10 so values like "08" are not parsed as octal
-    MAX_DEPTH=$((10#$MAX_DEPTH_ARG))
+    parse_count "max_depth" "$MAX_DEPTH_ARG"
+    MAX_DEPTH="$PARSED"
 fi
 
 # Validate conflicting options
@@ -177,7 +277,7 @@ declare -A GROUP_COUNT=()  # group id -> number of entries in the group
 # tabs or newlines stay intact. In files-only mode every file is put in
 # group 0 so files from all levels are listed together.
 emit_records() {
-    local rec type rest size mtime mtime_h path parent group id is_dir key
+    local rec type rest size mtime mtime_h path parent group id is_dir key frac
     local next_id=1
     local -A dir_id=(["."]=0)
 
@@ -215,14 +315,94 @@ emit_records() {
 
         case "$SORT_BY" in
             size) key="$size" ;;
-            time) key="${mtime%.*}" ;;
+            time)
+                # Integer nanoseconds so sort -n needs no locale decimal point
+                # and entries within the same second keep their real order
+                if [[ "$mtime" == *.* ]]; then
+                    frac="${mtime#*.}0000000000"
+                    frac="${frac:0:10}"
+                    key="${mtime%%.*}"
+                else
+                    frac=0000000000
+                    key="$mtime"
+                fi
+                # Before 1970 find prints floor(seconds) plus a positive
+                # fraction ("-1.9" is -0.1s), so borrow one second to get
+                # -(|sec| - 1).(1 - frac)
+                if [[ "$key" == -* ]] && [ "$frac" != 0000000000 ]; then
+                    printf -v frac '%010d' $((10000000000 - 10#$frac))
+                    key="-$(( ${key#-} - 1 ))"
+                fi
+                key="$key$frac"
+                ;;
             *)    key=0 ;;
         esac
 
         printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\0' \
             "$group" "$key" "$id" "$is_dir" "$size" "${mtime_h%.*}" "$path"
-    done < <(cd -- "$TARGET_DIR" && find . -mindepth 1 -maxdepth "$MAX_DEPTH" \
-                -printf '%y\t%s\t%T@\t%TY-%Tm-%Td %TH:%TM:%TS\t%P\0' 2>/dev/null)
+    done < <(
+        { cd -- "$TARGET_DIR" && find . -mindepth 1 -maxdepth "$MAX_DEPTH" \
+              -printf '%y\t%s\t%T@\t%TY-%Tm-%Td %TH:%TM:%TS\t%P\0'; } 2>"$WORK_DIR/find.err"
+        record_status find $?
+    )
+}
+
+# Commands run inside process substitutions and pipelines, where their exit
+# status is otherwise lost. Each one appends "name status" to a file that is
+# checked once all output has been read (the reader only sees EOF after the
+# producer, including this line, has finished).
+record_status() {
+    printf '%s %s\n' "$1" "$2" >> "$WORK_DIR/status"
+}
+
+# Print up to 5 lines of a captured stderr file, made terminal-safe.
+show_errors() {
+    local file="$1"
+    local lines=() line n
+    [ -s "$file" ] || return 0
+    mapfile -t lines < "$file"
+    n=0
+    for line in "${lines[@]}"; do
+        n=$((n + 1))
+        if [ "$n" -gt 5 ]; then
+            echo "  ... ($(( ${#lines[@]} - 5 )) more)" >&2
+            break
+        fi
+        safe_text "$line"
+        echo "  $SAFE" >&2
+    done
+}
+
+fatal() {
+    echo "Error: $1" >&2
+    [ -n "${2:-}" ] && show_errors "$2"
+    exit 1
+}
+
+# Make sure every command this run needs exists and supports the GNU
+# options used below, before anything is printed.
+check_requirements() {
+    local cmds=(find sort numfmt mktemp rm)
+    local missing=() cmd
+
+    [ "$SHOW_TYPE" != "files" ] && cmds+=(du)
+    for cmd in "${cmds[@]}"; do
+        command -v "$cmd" >/dev/null 2>&1 || missing+=("$cmd")
+    done
+    if [ "${#missing[@]}" -gt 0 ]; then
+        fatal "required command(s) not found: ${missing[*]} (see REQUIREMENTS in --help)"
+    fi
+
+    find /dev/null -maxdepth 0 -printf '' >/dev/null 2>&1 ||
+        fatal "find does not support -printf (GNU findutils required)"
+    if [ "$SHOW_TYPE" != "files" ]; then
+        du -b -l -0 --max-depth=0 /dev/null >/dev/null 2>&1 ||
+            fatal "du does not support -b -l -0 --max-depth (GNU coreutils required)"
+    fi
+    numfmt --to=iec-i --suffix=B 1024 >/dev/null 2>&1 ||
+        fatal "numfmt failed (GNU coreutils required)"
+    printf 'a\0' | sort -z -t "$DELIM" -k1,1n -k2,2rn >/dev/null 2>&1 ||
+        fatal "sort does not support -z (GNU coreutils required)"
 }
 
 # Traverse the filesystem once (one du, one find) instead of running du for
@@ -232,16 +412,28 @@ emit_records() {
 build_index() {
     local rec size path
 
+    # Files-only mode never shows directory totals, so skip du entirely.
     # -l counts hard-linked files in every directory that holds them, so a
     # directory total never depends on which directory du visited first.
-    while IFS= read -r -d '' rec; do
-        size="${rec%%$'\t'*}"
-        path="${rec#*$'\t'}"
-        [ "$path" != "." ] && path="${path#./}"
-        DIR_SIZE["$path"]="$size"
-    done < <(cd -- "$TARGET_DIR" && du -b -l -0 --max-depth="$MAX_DEPTH" . 2>/dev/null)
+    if [ "$SHOW_TYPE" != "files" ]; then
+        while IFS= read -r -d '' rec; do
+            size="${rec%%$'\t'*}"
+            path="${rec#*$'\t'}"
+            [ "$path" != "." ] && path="${path#./}"
+            DIR_SIZE["$path"]="$size"
+        done < <(
+            { cd -- "$TARGET_DIR" && du -b -l -0 --max-depth="$MAX_DEPTH" .; } 2>"$WORK_DIR/du.err"
+            record_status du $?
+        )
 
-    [ "$CANCELLED" = true ] && return 1
+        [ "$CANCELLED" = true ] && return 1
+
+        # Without the root total du did not really run; a non-zero status
+        # with a root total means some paths could not be read.
+        if [ -z "${DIR_SIZE[.]+set}" ]; then
+            fatal "du failed to read '$SAFE_TARGET'" "$WORK_DIR/du.err"
+        fi
+    fi
 
     # Siblings share the parent prefix, so comparing the path (field 7 to end)
     # orders them by name; size/time ties fall back to reverse name as in 1.0.9.
@@ -264,12 +456,49 @@ build_index() {
         fi
         GROUP_COUNT[$group]=$((GROUP_COUNT[$group] + 1))
         pos=$((pos + 1))
-    done < <(emit_records |
-             numfmt -z -d "$DELIM" --field=5 --to=iec-i --suffix=B --invalid=ignore 2>/dev/null |
-             sort "${sort_opts[@]}")
+    done < <(
+        { emit_records; record_status emit $?; } |
+        { numfmt -z -d "$DELIM" --field=5 --to=iec-i --suffix=B 2>"$WORK_DIR/numfmt.err"
+          record_status numfmt $?; } |
+        { sort "${sort_opts[@]}" 2>"$WORK_DIR/sort.err"
+          record_status sort $?; }
+    )
 
     [ "$CANCELLED" = true ] && return 1
+
+    local -A status=()
+    local name rc
+    if [ -f "$WORK_DIR/status" ]; then
+        while read -r name rc; do
+            status[$name]="$rc"
+        done < "$WORK_DIR/status"
+    fi
+
+    # A missing status means the stage never finished; treat it as failed.
+    # Check downstream first: when a later stage dies, earlier ones are
+    # killed by SIGPIPE, so the first failure found is the real cause.
+    for name in sort numfmt emit; do
+        if [ "${status[$name]:-missing}" != 0 ]; then
+            fatal "$name stage failed (status ${status[$name]:-missing})" "$WORK_DIR/$name.err"
+        fi
+    done
+    if [ -z "${status[find]:-}" ]; then
+        fatal "find did not complete" "$WORK_DIR/find.err"
+    fi
+
+    # du/find exit non-zero when some paths could not be read (permission
+    # denied, removed during the scan). The listing is still printed, then
+    # reported as incomplete.
+    [ "${status[find]}" != 0 ] && INCOMPLETE=true
+    [ "${status[du]:-0}" != 0 ] && INCOMPLETE=true
     return 0
+}
+
+# Warn that some paths could not be read and show why.
+report_incomplete() {
+    echo "Warning: results are incomplete; some paths could not be read, so entries may be missing and sizes too small:" >&2
+    show_errors "$WORK_DIR/du.err"
+    show_errors "$WORK_DIR/find.err"
 }
 
 print_tree() {
@@ -353,6 +582,8 @@ print_tree() {
             item_name="${rec##*/}"
         fi
         [ -z "$item_mtime" ] && item_mtime="N/A"
+        safe_text "$item_name"
+        item_name="$SAFE"
 
         # Display format depends on sort type
         local line=""
@@ -401,7 +632,23 @@ print_tree() {
     fi
 }
 
-echo "$TARGET_DIR"
+safe_text "$TARGET_DIR"
+SAFE_TARGET="$SAFE"
+INCOMPLETE=false
+
 if [ "$MAX_DEPTH" -gt 0 ]; then
-    build_index && print_tree 0 0 ""
+    check_requirements
+    WORK_DIR=$(mktemp -d 2>/dev/null) || fatal "cannot create a temporary directory"
+    build_index || exit 1
 fi
+
+printf '%s\n' "$SAFE_TARGET"
+if [ "$MAX_DEPTH" -gt 0 ]; then
+    print_tree 0 0 ""
+fi
+
+if [ "$INCOMPLETE" = true ]; then
+    report_incomplete
+    exit 2
+fi
+exit 0
